@@ -251,27 +251,6 @@ class ModelManager(context: Context) {
                 sizeMb = 40,
                 quality = "Basic accuracy. Fastest, lowest battery use. Fine for close-range dictation.",
             ),
-            VoskModel(
-                id = "vosk-model-en-us-0.22-lgraph",
-                urls = listOf(
-                    "$ALPHACEPHEI/vosk-model-en-us-0.22-lgraph.zip",
-                    "$HF_GRIMSO/vosk-model-en-us-0.22-lgraph.zip",
-                    "$HF_RHASSPY/vosk-model-en-us-0.22-lgraph.zip",
-                ),
-                displayName = "Medium (balanced)",
-                sizeMb = 128,
-                quality = "Noticeably better accuracy, still quick. Recommended for most phones.",
-            ),
-            VoskModel(
-                id = "vosk-model-en-us-0.22",
-                urls = listOf(
-                    "$ALPHACEPHEI/vosk-model-en-us-0.22.zip",
-                    "$HF_GRIMSO/vosk-model-en-us-0.22.zip",
-                ),
-                displayName = "Large (best accuracy)",
-                sizeMb = 1800,
-                quality = "Highest accuracy, best for distant/noisy audio. Big download, needs ~4 GB free and a recent phone.",
-            ),
         )
     }
 }
