@@ -27,10 +27,20 @@ jobs:
         run: gradle wrapper --gradle-version 8.9
 
       - name: Unit tests
-        run: ./gradlew test --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew test --continue 2>&1 | tee /tmp/gradle.log || {
+            grep -E "^e: |error: |> Task .* FAILED|What went wrong|Caused by:|Could not " /tmp/gradle.log | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
 
       - name: Assemble debug APKs
-        run: ./gradlew :app:assembleDebug :wear:assembleDebug --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug :wear:assembleDebug 2>&1 | tee /tmp/gradle.log || {
+            grep -E "^e: |error: |> Task .* FAILED|What went wrong|Caused by:|Could not " /tmp/gradle.log | head -60 | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
 
       - name: Upload phone APK
         uses: actions/upload-artifact@v4
