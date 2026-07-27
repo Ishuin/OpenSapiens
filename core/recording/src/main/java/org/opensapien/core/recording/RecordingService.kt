@@ -1,5 +1,6 @@
 package org.opensapien.core.recording
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,9 +8,11 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,13 +20,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.launch
 import org.opensapien.core.data.OpenSapienDb
 import org.opensapien.core.data.Transcript
 import org.opensapien.core.data.TranscriptFileStore
-import org.opensapien.core.transcription.FakeEngine
+import org.opensapien.core.transcription.ModelManager
 import org.opensapien.core.transcription.TranscriptionEngine
-import java.io.File
+import org.opensapien.core.transcription.VoskEngine
 
 /**
  * Foreground microphone service — the single recorder on the phone.
@@ -31,14 +35,17 @@ import java.io.File
  * [ACTION_TOGGLE] intents. Survives screen-off and app swipe.
  *
  * Pipeline: PcmRecorder → TranscriptionEngine (stream) → TranscriptFileStore + Room.
- * Audio is never persisted in streaming mode; in record-then-transcribe mode the
- * temp WAV is deleted right after successful transcription.
+ * Audio is never persisted in streaming mode.
+ *
+ * Stop is *graceful*: [PcmRecorder.stop] completes the PCM flow normally so the
+ * engine finalizes and the transcript row is inserted before the service exits.
  */
 class RecordingService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
-    private var engine: TranscriptionEngine = FakeEngine() // TODO: WhisperEngine once native lands
+    private var recorder: PcmRecorder? = null
+    private var engine: TranscriptionEngine = VoskEngine()
     private var startedAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -57,45 +64,82 @@ class RecordingService : Service() {
     private fun start(source: String) {
         if (job != null) return
         startForegroundCompat()
+
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            fail("Microphone permission needed — open the app once to grant it.")
+            return
+        }
+        val modelManager = ModelManager(this)
+        if (!modelManager.isInstalled) {
+            fail("Speech model not downloaded — open the app to set it up.")
+            return
+        }
+
         startedAt = System.currentTimeMillis()
         _state.value = State.Recording(startedAt)
+        val rec = PcmRecorder()
+        recorder = rec
 
         job = scope.launch {
-            if (!engine.isReady) engine.initialize(File(filesDir, "models/model.bin"))
-            val store = TranscriptFileStore(this@RecordingService)
-            val fileName = store.newFileName(startedAt)
-            val sb = StringBuilder()
-            store.write(fileName, "")
+            var errored = false
+            try {
+                if (!engine.isReady) engine.initialize(modelManager.modelDir)
+                val store = TranscriptFileStore(this@RecordingService)
+                val fileName = store.newFileName(startedAt)
+                val sb = StringBuilder()
+                store.write(fileName, "")
 
-            engine.transcribeStream(PcmRecorder().chunks()).collect { seg ->
-                if (seg.isFinal) {
-                    sb.append(seg.text)
-                    store.append(fileName, seg.text)
+                engine.transcribeStream(rec.chunks().buffer(capacity = 600)).collect { seg ->
+                    if (seg.isFinal) {
+                        sb.append(seg.text)
+                        store.append(fileName, seg.text)
+                        _state.value = State.Recording(startedAt, liveText = sb.toString())
+                    } else {
+                        _state.value = State.Recording(startedAt, liveText = sb.toString() + seg.text)
+                    }
                 }
-                _state.value = State.Recording(startedAt, liveText = sb.toString() + seg.text)
-            }
 
-            // Flow completes when recording stops (chunks flow closed).
-            val text = sb.toString()
-            OpenSapienDb.get(this@RecordingService).transcripts().insert(
-                Transcript(
-                    fileName = fileName,
-                    title = text.take(48).ifBlank { fileName },
-                    createdAt = startedAt,
-                    durationMs = System.currentTimeMillis() - startedAt,
-                    preview = text.take(200),
-                    source = runCatching { Transcript.Source.valueOf(source) }
-                        .getOrDefault(Transcript.Source.PHONE),
-                ),
-            )
-            _state.value = State.Idle
+                // Flow completed → recording stopped gracefully; persist the row.
+                val text = sb.toString().trim()
+                OpenSapienDb.get(this@RecordingService).transcripts().insert(
+                    Transcript(
+                        fileName = fileName,
+                        title = text.take(48).ifBlank { fileName },
+                        createdAt = startedAt,
+                        durationMs = System.currentTimeMillis() - startedAt,
+                        preview = text.take(200),
+                        source = runCatching { Transcript.Source.valueOf(source) }
+                            .getOrDefault(Transcript.Source.PHONE),
+                    ),
+                )
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                errored = true
+                _state.value = State.Error(t.message ?: "recording failed")
+            } finally {
+                recorder = null
+                job = null
+                if (!errored) _state.value = State.Idle
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
     }
 
     private fun stop() {
-        job?.cancel()
-        job = null
-        _state.value = State.Idle
+        val rec = recorder
+        if (rec != null) {
+            rec.stop() // pipeline finishes + persists, then service exits itself
+        } else {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private fun fail(message: String) {
+        _state.value = State.Error(message)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -134,6 +178,7 @@ class RecordingService : Service() {
     sealed interface State {
         data object Idle : State
         data class Recording(val startedAt: Long, val liveText: String = "") : State
+        data class Error(val message: String) : State
     }
 
     companion object {

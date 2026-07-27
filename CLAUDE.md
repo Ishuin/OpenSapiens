@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**Scaffolded.** All six modules exist and follow the architecture below. Remaining WIP (also in README roadmap): whisper.cpp native build (`WhisperEngine` JNI stubs exist; `FakeEngine` backs dev), Drive auth/upload (`DriveClient` TODOs), Wear audio transfer + tile rendering, transcript detail/settings UI. License: Apache-2.0.
+**Scaffolded.** All six modules exist and follow the architecture below. Remaining WIP (also in README roadmap): Drive auth/upload (`DriveClient` TODOs), transcript detail/settings UI. ASR is real: `VoskEngine` + `ModelManager` (one-time ~40 MB model download in `MainActivity`); `WhisperEngine` JNI stub kept for a future higher-accuracy option. Wear records WAV and streams to phone via ChannelClient; phone transcribes in `WearTranscribeWorker` and deletes audio. License: Apache-2.0.
 
 ## What This Project Is
 

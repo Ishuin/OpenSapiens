@@ -62,5 +62,6 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.play.services.wearable)
     implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.androidx.work.runtime.ktx)
     testImplementation(libs.junit)
 }

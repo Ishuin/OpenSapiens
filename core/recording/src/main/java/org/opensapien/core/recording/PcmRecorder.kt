@@ -16,6 +16,17 @@ import kotlin.concurrent.thread
  */
 class PcmRecorder(private val sampleRate: Int = 16_000) {
 
+    @Volatile
+    private var stopped = false
+
+    /**
+     * Graceful stop: the chunks flow *completes normally* so downstream
+     * (transcription finalization + persistence) still runs.
+     */
+    fun stop() {
+        stopped = true
+    }
+
     @SuppressLint("MissingPermission")
     fun chunks(): Flow<ShortArray> = callbackFlow {
         val minBuf = AudioRecord.getMinBufferSize(
@@ -33,18 +44,20 @@ class PcmRecorder(private val sampleRate: Int = 16_000) {
 
         val reader = thread(name = "pcm-reader") {
             val buf = ShortArray(sampleRate / 10) // 100 ms chunks
-            while (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+            while (!stopped && record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                 val n = record.read(buf, 0, buf.size)
                 if (n > 0) trySend(buf.copyOf(n))
             }
+            close() // normal completion → downstream finalizes
         }
 
         awaitClose {
+            stopped = true
+            reader.join(1000)
             runCatching {
                 record.stop()
                 record.release()
             }
-            reader.join(500)
         }
     }
 }

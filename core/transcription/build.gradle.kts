@@ -17,5 +17,8 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
+    // Vosk on-device ASR. JNA must be the @aar artifact (bundles Android natives).
+    api(libs.vosk.android)
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
     testImplementation(libs.junit)
 }

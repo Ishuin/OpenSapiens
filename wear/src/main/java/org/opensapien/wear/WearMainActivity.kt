@@ -25,6 +25,13 @@ class WearMainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Opportunistic flush of any audio queued while the phone was unreachable.
+        runCatching {
+            startService(
+                Intent(this, WearRecordingService::class.java)
+                    .setAction(WearRecordingService.ACTION_FLUSH),
+            )
+        }
         setContent {
             MaterialTheme {
                 val recording by WearRecordingService.isRecording.collectAsState()

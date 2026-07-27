@@ -15,7 +15,7 @@ Open-source, privacy-first voice capture for Android + Wear OS. Speak anywhere â
 | `:app` | Phone app (Compose), Glance widget, Wear Data Layer listener |
 | `:wear` | Wear OS app, tile, watch-side recorder |
 | `:core:recording` | Foreground mic service (`RecordingService`), PCM capture |
-| `:core:transcription` | ASR abstraction; whisper.cpp JNI engine (WIP), fake engine for dev |
+| `:core:transcription` | ASR abstraction; Vosk engine (default, offline) + one-time model downloader; whisper.cpp JNI stub for later |
 | `:core:data` | Room index + files-as-truth transcript store |
 | `:core:sync` | Drive one-way sync via WorkManager (WIP: auth) |
 
@@ -33,7 +33,8 @@ gradle wrapper --gradle-version 8.9   # once, to generate the wrapper
 ## Status / Roadmap
 
 - [x] Project scaffold, data layer, recording service, widget, wear skeleton
-- [ ] whisper.cpp native build (git submodule + CMake) and model download on first run
+- [x] Real on-device ASR: Vosk small-en model (~40 MB), one-time in-app download, offline thereafter
+- [ ] Optional: whisper.cpp native build (git submodule + CMake) as higher-accuracy engine
 - [ ] Google Drive auth + upload implementation
 - [ ] Wear audio transfer (ChannelClient) + offline queue
 - [ ] Wear tile one-tap record
