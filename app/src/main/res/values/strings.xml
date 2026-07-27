@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">open_sapien</string>
+    <string name="widget_description">Start/stop voice capture without opening the app</string>
+</resources>

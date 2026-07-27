@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"zap ls -laR \\\"D:\\\\Projects\\\\open_android_sapien\\\\.claude\\\" 2>/dev/null; zap read \\\"D:\\\\Projects\\\\open_android_sapien\\\\.claude\\\"/*.md 2>/dev/null; zap read \\\"D:\\\\Projects\\\\open_android_sapi...",
+  "error": "Exit code 1\nsettings.local.json  97B",
+  "timestamp": "2026-07-27T05:56:24.823Z",
+  "retry_count": 1
+}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple mic glyph -->
+    <path
+        android:fillColor="#D0BCFF"
+        android:pathData="M54,30a8,8 0 0,1 8,8v14a8,8 0 0,1 -16,0V38a8,8 0 0,1 8,-8z" />
+    <path
+        android:fillColor="#D0BCFF"
+        android:pathData="M40,52a14,14 0 0,0 28,0h4a18,18 0 0,1 -16,17.9V78h-4v-8.1A18,18 0 0,1 36,52z" />
+</vector>
