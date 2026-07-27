@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"zap git add -A && zap git commit -q -m \\\"fix: expose Room via api in core:data; implement RecordTileService onTileRequest\\\" && zap git push -q && sha=$(git rev-parse HEAD) && for i in $(se...",
-  "error": "Exit code 2\n/usr/bin/bash: eval: line 9: syntax error near unexpected token `;'\n/usr/bin/bash: eval: line 9: `print(c.get('id',''), c.get('status',''), c.get('conclusion'))\"); echo \"$out\"; case \"$out\" in *completed*) break; ; esac; done'",
-  "timestamp": "2026-07-27T06:36:20.738Z",
+  "tool_input_preview": "{\"command\":\"zap git add -A && zap git commit -q -m \\\"feat: real offline ASR (Vosk) + widget wiring + full wear audio pipeline\\n\\n- VoskEngine (streaming + batch) with ModelManager one-time ~40MB model...",
+  "error": "Exit code 143\nCommand timed out after 2m 0s\nok 19 files changed, 701 insertions(+), 71 deletions(-)\nok",
+  "timestamp": "2026-07-27T08:00:18.254Z",
   "retry_count": 1
 }

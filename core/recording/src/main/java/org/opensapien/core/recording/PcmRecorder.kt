@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -40,6 +42,14 @@ class PcmRecorder(private val sampleRate: Int = 16_000) {
             minBuf * 4,
         )
         check(record.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord init failed" }
+        // Far-field helpers: AGC lifts distant/quiet speech, NS cuts steady room
+        // noise. Both no-op harmlessly on devices without the effect.
+        val agc = if (AutomaticGainControl.isAvailable()) {
+            AutomaticGainControl.create(record.audioSessionId)?.apply { enabled = true }
+        } else null
+        val ns = if (NoiseSuppressor.isAvailable()) {
+            NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true }
+        } else null
         record.startRecording()
 
         val reader = thread(name = "pcm-reader") {
@@ -58,6 +68,8 @@ class PcmRecorder(private val sampleRate: Int = 16_000) {
                 record.stop()
                 record.release()
             }
+            runCatching { agc?.release() }
+            runCatching { ns?.release() }
         }
     }
 }

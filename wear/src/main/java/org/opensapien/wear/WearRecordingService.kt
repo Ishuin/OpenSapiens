@@ -112,6 +112,14 @@ class WearRecordingService : Service() {
             minBuf * 4,
         )
         check(record.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord init failed" }
+        val agc = if (android.media.audiofx.AutomaticGainControl.isAvailable()) {
+            android.media.audiofx.AutomaticGainControl.create(record.audioSessionId)
+                ?.apply { enabled = true }
+        } else null
+        val ns = if (android.media.audiofx.NoiseSuppressor.isAvailable()) {
+            android.media.audiofx.NoiseSuppressor.create(record.audioSessionId)
+                ?.apply { enabled = true }
+        } else null
         record.startRecording()
 
         var dataLen = 0
@@ -134,6 +142,8 @@ class WearRecordingService : Service() {
         } finally {
             runCatching { record.stop() }
             record.release()
+            runCatching { agc?.release() }
+            runCatching { ns?.release() }
         }
         if (dataLen == 0) dest.delete()
     }
