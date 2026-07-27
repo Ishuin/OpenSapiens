@@ -7,19 +7,24 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -78,15 +83,25 @@ fun HomeScreen(onRecordClick: () -> Unit) {
     val recState by RecordingService.state.collectAsState()
 
     val modelManager = remember { ModelManager(context) }
-    var modelReady by remember { mutableStateOf(modelManager.isInstalled) }
-    var downloadProgress by remember { mutableStateOf<Int?>(null) }
-    var downloadError by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
+    var modelsChanged by remember { mutableStateOf(0) }
+    val modelReady = remember(modelsChanged) { modelManager.isInstalled }
+    var showModels by remember { mutableStateOf(false) }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("open_sapien") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("open_sapien") },
+                actions = {
+                    if (modelReady) {
+                        TextButton(onClick = { showModels = !showModels }) {
+                            Text(if (showModels) "Done" else "Models")
+                        }
+                    }
+                },
+            )
+        },
         floatingActionButton = {
-            if (modelReady) {
+            if (modelReady && !showModels) {
                 FloatingActionButton(onClick = onRecordClick) {
                     Text(if (recState is RecordingService.State.Recording) "⏹" else "●")
                 }
@@ -95,79 +110,152 @@ fun HomeScreen(onRecordClick: () -> Unit) {
     ) { padding ->
         val live = recState
         Column(Modifier.padding(padding)) {
-            if (!modelReady) {
-                val progress = downloadProgress
-                Column(Modifier.padding(16.dp)) {
+            if (!modelReady || showModels) {
+                if (!modelReady) {
                     Text(
-                        "One-time setup: download the offline speech model " +
-                            "(~${ModelManager.MODEL_SIZE_MB} MB). " +
+                        "One-time setup: pick an offline speech model to download. " +
                             "After this, transcription never touches the network.",
                         style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp),
                     )
-                    if (progress == null) {
-                        Button(
-                            onClick = {
-                                downloadError = null
-                                downloadProgress = 0
-                                scope.launch {
-                                    runCatching { modelManager.install { p -> downloadProgress = p } }
-                                        .onSuccess { modelReady = true }
-                                        .onFailure {
-                                            downloadProgress = null
-                                            downloadError = it.message ?: "download failed"
-                                        }
-                                }
+                }
+                ModelPicker(modelManager) { modelsChanged++ }
+            } else {
+                if (live is RecordingService.State.Error) {
+                    Text(
+                        text = live.message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+                if (live is RecordingService.State.Recording) {
+                    Text(
+                        text = live.liveText.ifBlank { "Listening…" },
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Top,
+                ) {
+                    items(transcripts, key = { it.id }) { t ->
+                        ListItem(
+                            headlineContent = { Text(t.title) },
+                            supportingContent = { Text(t.preview, maxLines = 2) },
+                            overlineContent = {
+                                Text(
+                                    DateFormat.getDateTimeInstance().format(Date(t.createdAt)) +
+                                        "  ·  " + t.source.name,
+                                )
                             },
-                            modifier = Modifier.padding(top = 12.dp),
-                        ) { Text("Download model") }
-                    } else {
-                        LinearProgressIndicator(
-                            progress = { progress / 100f },
-                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                        )
-                        Text("$progress%", style = MaterialTheme.typography.labelMedium)
-                    }
-                    downloadError?.let {
-                        Text(
-                            it,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
                         )
                     }
                 }
             }
-            if (live is RecordingService.State.Error) {
-                Text(
-                    text = live.message,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(16.dp),
-                )
-            }
-            if (live is RecordingService.State.Recording) {
-                Text(
-                    text = live.liveText.ifBlank { "Listening…" },
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(16.dp),
-                )
-            }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Top,
-            ) {
-                items(transcripts, key = { it.id }) { t ->
-                    ListItem(
-                        headlineContent = { Text(t.title) },
-                        supportingContent = { Text(t.preview, maxLines = 2) },
-                        overlineContent = {
-                            Text(
-                                DateFormat.getDateTimeInstance().format(Date(t.createdAt)) +
-                                    "  ·  " + t.source.name,
-                            )
+        }
+    }
+}
+
+/**
+ * Model catalog: shows each model's size + quality up front so the user can
+ * choose before downloading. Installed models can be switched to or deleted
+ * (and re-downloaded later).
+ */
+@Composable
+fun ModelPicker(modelManager: ModelManager, onChanged: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var tick by remember { mutableStateOf(0) }
+    var downloadingId by remember { mutableStateOf<String?>(null) }
+    var progress by remember { mutableStateOf(0) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    fun changed() {
+        tick++
+        onChanged()
+    }
+
+    Column(Modifier.verticalScroll(rememberScrollState())) {
+        ModelManager.CATALOG.forEach { model ->
+            // `tick` forces re-read of install/active state after actions.
+            val installed = remember(tick) { modelManager.isInstalled(model) }
+            val active = remember(tick) { modelManager.activeModel.id == model.id }
+            val sizeLabel =
+                if (model.sizeMb >= 1000) "%.1f GB".format(model.sizeMb / 1000f)
+                else "${model.sizeMb} MB"
+
+            ListItem(
+                headlineContent = { Text("${model.displayName}  ·  $sizeLabel") },
+                overlineContent = {
+                    Text(
+                        when {
+                            active && installed -> "ACTIVE"
+                            installed -> "Downloaded"
+                            else -> "Not downloaded"
                         },
                     )
-                }
-            }
+                },
+                supportingContent = {
+                    Column {
+                        Text(model.quality, style = MaterialTheme.typography.bodySmall)
+                        if (downloadingId == model.id) {
+                            LinearProgressIndicator(
+                                progress = { progress / 100f },
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            )
+                            Text("$progress%", style = MaterialTheme.typography.labelMedium)
+                        } else {
+                            Row {
+                                if (!installed) {
+                                    Button(
+                                        enabled = downloadingId == null,
+                                        onClick = {
+                                            error = null
+                                            progress = 0
+                                            downloadingId = model.id
+                                            scope.launch {
+                                                runCatching {
+                                                    modelManager.install(model) { p -> progress = p }
+                                                }.onSuccess {
+                                                    modelManager.activeModel = model
+                                                }.onFailure {
+                                                    error = it.message ?: "download failed"
+                                                }
+                                                downloadingId = null
+                                                changed()
+                                            }
+                                        },
+                                    ) { Text("Download") }
+                                } else {
+                                    if (!active) {
+                                        Button(onClick = {
+                                            modelManager.activeModel = model
+                                            changed()
+                                        }) { Text("Use") }
+                                    }
+                                    TextButton(
+                                        enabled = downloadingId == null,
+                                        onClick = {
+                                            modelManager.delete(model)
+                                            changed()
+                                        },
+                                    ) { Text("Delete") }
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+            HorizontalDivider()
+        }
+        error?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(16.dp),
+            )
         }
     }
 }

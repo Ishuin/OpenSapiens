@@ -46,6 +46,7 @@ class RecordingService : Service() {
     private var job: Job? = null
     private var recorder: PcmRecorder? = null
     private var engine: TranscriptionEngine = VoskEngine()
+    private var engineModelDir: String? = null
     private var startedAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -85,7 +86,16 @@ class RecordingService : Service() {
         job = scope.launch {
             var errored = false
             try {
-                if (!engine.isReady) engine.initialize(modelManager.modelDir)
+                val wantedDir = modelManager.modelDir.absolutePath
+                if (engine.isReady && engineModelDir != wantedDir) {
+                    // User switched models since last recording — reload.
+                    engine.release()
+                    engine = VoskEngine()
+                }
+                if (!engine.isReady) {
+                    engine.initialize(modelManager.modelDir)
+                    engineModelDir = wantedDir
+                }
                 val store = TranscriptFileStore(this@RecordingService)
                 val fileName = store.newFileName(startedAt)
                 val sb = StringBuilder()

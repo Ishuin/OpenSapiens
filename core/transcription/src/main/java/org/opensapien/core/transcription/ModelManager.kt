@@ -10,46 +10,88 @@ import java.net.URL
 import java.util.zip.ZipInputStream
 
 /**
- * One-time download + install of the Vosk model (~40 MB). After install the
- * app never needs the network for transcription. Files land under
- * `<filesDir>/models/vosk-model-small-en-us-0.15/` with a `.complete` marker.
+ * A downloadable offline speech model. [sizeMb] is the approximate download
+ * size shown to the user before they commit; [quality] is a one-line
+ * plain-English description of the accuracy/speed trade-off.
+ */
+data class VoskModel(
+    val id: String,
+    val displayName: String,
+    val sizeMb: Int,
+    val quality: String,
+    val url: String,
+)
+
+/**
+ * Download / install / delete / switch between offline Vosk models. After
+ * install the app never needs the network for transcription. Each model lands
+ * under `<filesDir>/models/<model-id>/` with a `.complete` marker. The active
+ * model id is persisted in SharedPreferences; [modelDir] and [isInstalled]
+ * always refer to the active model so existing callers keep working.
  */
 class ModelManager(context: Context) {
 
     private val modelsRoot = File(context.filesDir, "models")
     private val cacheDir: File = context.cacheDir
+    private val prefs = context.getSharedPreferences("model_prefs", Context.MODE_PRIVATE)
 
-    /** Directory to pass to [VoskEngine.initialize]. */
-    val modelDir = File(modelsRoot, MODEL_NAME)
+    /** Currently selected model (defaults to the small model). */
+    var activeModel: VoskModel
+        get() {
+            val id = prefs.getString(KEY_ACTIVE, DEFAULT_MODEL_ID) ?: DEFAULT_MODEL_ID
+            return CATALOG.firstOrNull { it.id == id } ?: CATALOG.first()
+        }
+        set(value) {
+            prefs.edit().putString(KEY_ACTIVE, value.id).apply()
+        }
 
-    private val marker = File(modelDir, ".complete")
+    /** Directory to pass to [VoskEngine.initialize] — the active model. */
+    val modelDir: File get() = dirOf(activeModel)
 
-    val isInstalled: Boolean get() = marker.exists()
+    /** True when the *active* model is fully installed. */
+    val isInstalled: Boolean get() = isInstalled(activeModel)
 
-    /** Download + unzip. Safe to call repeatedly; no-op once installed. */
-    suspend fun install(onProgress: (percent: Int) -> Unit = {}) = withContext(Dispatchers.IO) {
-        if (isInstalled) return@withContext
+    fun dirOf(model: VoskModel) = File(modelsRoot, model.id)
+
+    fun isInstalled(model: VoskModel) = File(dirOf(model), ".complete").exists()
+
+    fun installedModels(): List<VoskModel> = CATALOG.filter { isInstalled(it) }
+
+    /** Delete a downloaded model. If it was active, falls back to the default id. */
+    fun delete(model: VoskModel) {
+        dirOf(model).deleteRecursively()
+        File(modelsRoot, "${model.id}.staging").deleteRecursively()
+    }
+
+    /** Download + unzip [model]. Safe to call repeatedly; no-op once installed. */
+    suspend fun install(
+        model: VoskModel = activeModel,
+        onProgress: (percent: Int) -> Unit = {},
+    ) = withContext(Dispatchers.IO) {
+        if (isInstalled(model)) return@withContext
         modelsRoot.mkdirs()
-        val zip = File(cacheDir, "$MODEL_NAME.zip")
+        val zip = File(cacheDir, "${model.id}.zip")
         try {
-            download(zip, onProgress)
-            val staging = File(modelsRoot, "$MODEL_NAME.staging")
+            download(model.url, zip, onProgress)
+            val staging = File(modelsRoot, "${model.id}.staging")
             staging.deleteRecursively()
             staging.mkdirs()
             unzip(zip, staging)
             // Zip contains a single root folder named after the model.
-            val extractedRoot = File(staging, MODEL_NAME).takeIf { it.isDirectory } ?: staging
-            modelDir.deleteRecursively()
-            check(extractedRoot.renameTo(modelDir)) { "model install failed (rename)" }
+            val extractedRoot = File(staging, model.id).takeIf { it.isDirectory } ?: staging
+            val target = dirOf(model)
+            target.deleteRecursively()
+            check(extractedRoot.renameTo(target)) { "model install failed (rename)" }
             staging.deleteRecursively()
+            val marker = File(target, ".complete")
             check(marker.createNewFile() || marker.exists())
         } finally {
             zip.delete()
         }
     }
 
-    private fun download(dest: File, onProgress: (Int) -> Unit) {
-        val conn = URL(MODEL_URL).openConnection() as HttpURLConnection
+    private fun download(url: String, dest: File, onProgress: (Int) -> Unit) {
+        val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 30_000
         try {
@@ -96,8 +138,35 @@ class ModelManager(context: Context) {
     }
 
     companion object {
-        const val MODEL_NAME = "vosk-model-small-en-us-0.15"
-        const val MODEL_URL = "https://alphacephei.com/vosk/models/$MODEL_NAME.zip"
+        const val KEY_ACTIVE = "active_model_id"
+        const val DEFAULT_MODEL_ID = "vosk-model-small-en-us-0.15"
+
+        /** Kept for backward compatibility with earlier callers. */
+        const val MODEL_NAME = DEFAULT_MODEL_ID
         const val MODEL_SIZE_MB = 40
+
+        val CATALOG = listOf(
+            VoskModel(
+                id = "vosk-model-small-en-us-0.15",
+                displayName = "Small (fast)",
+                sizeMb = 40,
+                quality = "Basic accuracy. Fastest, lowest battery use. Fine for close-range dictation.",
+                url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+            ),
+            VoskModel(
+                id = "vosk-model-en-us-0.22-lgraph",
+                displayName = "Medium (balanced)",
+                sizeMb = 128,
+                quality = "Noticeably better accuracy, still quick. Recommended for most phones.",
+                url = "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip",
+            ),
+            VoskModel(
+                id = "vosk-model-en-us-0.22",
+                displayName = "Large (best accuracy)",
+                sizeMb = 1800,
+                quality = "Highest accuracy, best for distant/noisy audio. Big download, needs ~4 GB free and a recent phone.",
+                url = "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
+            ),
+        )
     }
 }
