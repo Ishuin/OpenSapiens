@@ -18,7 +18,9 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.androidx.room.runtime)
+    // api: OpenSapienDb (extends RoomDatabase) is part of this module's public API,
+    // consumed by :core:recording and :core:sync
+    api(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit)
