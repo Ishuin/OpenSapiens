@@ -183,18 +183,18 @@ private fun LiveTranscript(text: String) {
 /** Formats elapsed time as m:ss (or h:mm:ss past an hour), ticking once a second. */
 @Composable
 private fun rememberElapsed(startedAt: Long?): String {
-    var now by androidx.compose.runtime.remember(startedAt) {
-        androidx.compose.runtime.mutableStateOf(System.currentTimeMillis())
+    val now = androidx.compose.runtime.remember(startedAt) {
+        androidx.compose.runtime.mutableLongStateOf(System.currentTimeMillis())
     }
     androidx.compose.runtime.LaunchedEffect(startedAt) {
         if (startedAt == null) return@LaunchedEffect
         while (true) {
-            now = System.currentTimeMillis()
+            now.longValue = System.currentTimeMillis()
             kotlinx.coroutines.delay(250)
         }
     }
     if (startedAt == null) return "0:00"
-    val ms = (now - startedAt).coerceAtLeast(0)
+    val ms: Long = (now.longValue - startedAt).coerceAtLeast(0L)
     val h = TimeUnit.MILLISECONDS.toHours(ms)
     val m = TimeUnit.MILLISECONDS.toMinutes(ms) % 60
     val s = TimeUnit.MILLISECONDS.toSeconds(ms) % 60

@@ -61,7 +61,7 @@ class ToggleRecordingAction : ActionCallback {
         val recording = RecordingService.state.value is RecordingService.State.Recording
         val micGranted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        val modelReady = ModelManager(context).isInstalled
+        val modelReady = ModelManager(context).activeModelDir() != null
 
         when {
             recording -> RecordingService.toggle(context, "WIDGET")
