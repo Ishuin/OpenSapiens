@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
-        android:label="open_sapien"
+        android:label="open_sapien Watch"
         android:theme="@android:style/Theme.DeviceDefault">
 
         <meta-data

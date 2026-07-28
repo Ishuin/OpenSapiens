@@ -7,7 +7,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -110,8 +115,21 @@ private fun OpenSapienApp(autoRecord: Boolean) {
     val detail = openTranscript
     if (detail != null) {
         val text = remember(detail.id) { fileStore.read(detail.fileName).orEmpty() }
+        BackHandler { openTranscript = null }
         Scaffold(
-            topBar = { TopAppBar(title = { Text(detail.title) }) },
+            topBar = {
+                TopAppBar(
+                    title = { Text(detail.title) },
+                    navigationIcon = {
+                        IconButton(onClick = { openTranscript = null }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to archive",
+                            )
+                        }
+                    },
+                )
+            },
         ) { pad ->
             TranscriptDetail(
                 transcript = detail,
