@@ -21,13 +21,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.flow.onEach
+import kotlin.math.sqrt
 import kotlinx.coroutines.launch
 import org.opensapien.core.data.OpenSapienDb
 import org.opensapien.core.data.Transcript
 import org.opensapien.core.data.TranscriptFileStore
 import org.opensapien.core.transcription.ModelManager
 import org.opensapien.core.transcription.TranscriptionEngine
-import org.opensapien.core.transcription.VoskEngine
+import org.opensapien.core.transcription.SherpaEngine
 
 /**
  * Foreground microphone service — the single recorder on the phone.
@@ -45,7 +47,7 @@ class RecordingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
     private var recorder: PcmRecorder? = null
-    private var engine: TranscriptionEngine = VoskEngine()
+    private var engine: TranscriptionEngine = SherpaEngine()
     private var engineModelDir: String? = null
     private var startedAt = 0L
 
@@ -73,7 +75,8 @@ class RecordingService : Service() {
             return
         }
         val modelManager = ModelManager(this)
-        if (!modelManager.isInstalled) {
+        val modelDir = modelManager.activeModelDir()
+        if (modelDir == null) {
             fail("Speech model not downloaded — open the app to set it up.")
             return
         }
@@ -86,14 +89,14 @@ class RecordingService : Service() {
         job = scope.launch {
             var errored = false
             try {
-                val wantedDir = modelManager.modelDir.absolutePath
+                val wantedDir = modelDir.absolutePath
                 if (engine.isReady && engineModelDir != wantedDir) {
                     // User switched models since last recording — reload.
                     engine.release()
-                    engine = VoskEngine()
+                    engine = SherpaEngine()
                 }
                 if (!engine.isReady) {
-                    engine.initialize(modelManager.modelDir)
+                    engine.initialize(modelDir)
                     engineModelDir = wantedDir
                 }
                 val store = TranscriptFileStore(this@RecordingService)
@@ -101,7 +104,11 @@ class RecordingService : Service() {
                 val sb = StringBuilder()
                 store.write(fileName, "")
 
-                engine.transcribeStream(rec.chunks().buffer(capacity = 600)).collect { seg ->
+                val metered = rec.chunks()
+                    .onEach { _level.value = rmsLevel(it) }
+                    .buffer(capacity = 600)
+
+                engine.transcribeStream(metered).collect { seg ->
                     if (seg.isFinal) {
                         sb.append(seg.text)
                         store.append(fileName, seg.text)
@@ -131,6 +138,7 @@ class RecordingService : Service() {
             } finally {
                 recorder = null
                 job = null
+                _level.value = 0f
                 if (!errored) _state.value = State.Idle
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -203,6 +211,32 @@ class RecordingService : Service() {
 
         /** Observed by app UI + widget for live status. */
         val state: StateFlow<State> = _state
+
+        private val _level = MutableStateFlow(0f)
+
+        /**
+         * Microphone loudness in `0f..1f`, updated once per PCM chunk (~every 100 ms).
+         * Drives the level meter; it is real signal, not an animation.
+         */
+        val level: StateFlow<Float> = _level
+
+        /**
+         * Perceptual loudness of one chunk. RMS is mapped through a decibel curve so
+         * quiet speech still moves the meter, the way an analogue VU meter behaves.
+         */
+        private fun rmsLevel(chunk: ShortArray): Float {
+            if (chunk.isEmpty()) return 0f
+            var sum = 0.0
+            for (s in chunk) {
+                val v = s / 32768.0
+                sum += v * v
+            }
+            val rms = sqrt(sum / chunk.size)
+            if (rms <= 0.0) return 0f
+            // -60 dBFS floor → 0f, 0 dBFS → 1f.
+            val db = 20.0 * kotlin.math.log10(rms)
+            return ((db + 60.0) / 60.0).coerceIn(0.0, 1.0).toFloat()
+        }
 
         fun toggle(context: Context, source: String) {
             context.startForegroundService(

@@ -1,9 +1,12 @@
 package org.opensapien.core.transcription
 
+import android.app.ActivityManager
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -11,183 +14,219 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.ZipInputStream
 
 /**
- * Offline Vosk ASR model metadata. [urls] lists the primary source first followed by
- * mirrors; downloads race a small probe against every mirror and pick the fastest.
- */
-data class VoskModel(
-    val id: String,
-    val urls: List<String>,
-    val displayName: String,
-    val sizeMb: Int,
-    val quality: String,
-)
-
-/**
- * Downloads / installs Vosk models under filesDir with a `.complete` marker.
- * The active model id is persisted in SharedPreferences; [modelDir] and [isInstalled]
- * always refer to the active model so existing callers keep working.
+ * Downloads, stores and switches on-device ASR models.
+ *
+ * Models are plain `.onnx` files fetched individually (no archive), which keeps the
+ * decoder dependency-free and lets every file resume independently. A model directory
+ * only counts as installed once [COMPLETE_MARKER] is written, so a half-finished
+ * download can never be handed to the engine.
  */
 class ModelManager(context: Context) {
 
     private val appContext = context.applicationContext
-    private val prefs = appContext.getSharedPreferences("model_prefs", Context.MODE_PRIVATE)
-    private val modelsRoot: File = File(appContext.filesDir, "models")
-    private val cacheDir: File = File(appContext.cacheDir, "model_staging")
+    private val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val modelsRoot = File(appContext.filesDir, "models").apply { mkdirs() }
 
-    var activeModel: VoskModel
-        get() = CATALOG.firstOrNull { it.id == prefs.getString(KEY_ACTIVE, DEFAULT_MODEL_ID) }
-            ?: CATALOG.first()
-        set(value) {
-            prefs.edit().putString(KEY_ACTIVE, value.id).apply()
-        }
+    var lastError: String? = null
+        private set
 
-    /** Directory to pass to [VoskEngine.initialize] — the active model. */
-    val modelDir: File get() = dirOf(activeModel)
+    // ---------------------------------------------------------------- catalog
 
-    /** True when the active model is fully installed. */
-    val isInstalled: Boolean get() = isInstalled(activeModel)
+    /**
+     * A downloadable speech model.
+     *
+     * @param files remote filenames, saved under [dirOf] with the same name.
+     * @param mirrors base URLs tried fastest-first; each must serve every entry in [files].
+     */
+    data class AsrModel(
+        val id: String,
+        val displayName: String,
+        val tagline: String,
+        val languages: String,
+        val sizeBytes: Long,
+        val multilingual: Boolean,
+        val demanding: Boolean,
+        val files: List<String>,
+        val mirrors: List<String>,
+    ) {
+        val sizeMb: Int get() = (sizeBytes / (1024 * 1024)).toInt()
+    }
 
-    fun isInstalled(model: VoskModel): Boolean =
+    // -------------------------------------------------------------- state
+
+    var activeModelId: String
+        get() = prefs.getString(KEY_ACTIVE, DEFAULT_MODEL_ID) ?: DEFAULT_MODEL_ID
+        set(value) = prefs.edit().putString(KEY_ACTIVE, value).apply()
+
+    val activeModel: AsrModel? get() = CATALOG.firstOrNull { it.id == activeModelId }
+
+    fun dirOf(model: AsrModel): File = File(modelsRoot, model.id)
+
+    fun isInstalled(model: AsrModel): Boolean =
         File(dirOf(model), COMPLETE_MARKER).exists()
 
-    fun installedModels(): List<VoskModel> = CATALOG.filter { isInstalled(it) }
+    fun installedModels(): List<AsrModel> = CATALOG.filter { isInstalled(it) }
 
-    fun dirOf(model: VoskModel): File = File(modelsRoot, model.id)
+    /** Directory for the selected model, or `null` when it still needs downloading. */
+    fun activeModelDir(): File? = activeModel
+        ?.takeIf { isInstalled(it) }
+        ?.let { dirOf(it) }
 
-    fun delete(model: VoskModel) {
+    /**
+     * True when this device is comfortable running [model]. The 0.6B model needs
+     * roughly a gigabyte of headroom; running it on a low-RAM phone will thrash.
+     */
+    fun isDeviceCapable(model: AsrModel): Boolean {
+        if (!model.demanding) return true
+        val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return true
+        if (am.isLowRamDevice) return false
+        val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        return info.totalMem >= DEMANDING_MIN_TOTAL_RAM
+    }
+
+    // ------------------------------------------------------------- install
+
+    fun delete(model: AsrModel) {
         dirOf(model).deleteRecursively()
-        stagingZip(model).delete()
     }
 
     /**
-     * Download (from the fastest reachable mirror, resuming partial data) and unzip.
-     * Safe to call repeatedly; no-op once installed. [onProgress] gets 0..100.
+     * Downloads every file of [model], reporting overall progress in `0f..1f`.
+     * Safe to re-run: completed files are skipped and partial ones resume.
      */
-    suspend fun install(model: VoskModel, onProgress: (Int) -> Unit = {}) {
-        if (isInstalled(model)) return
-        withContext(Dispatchers.IO) {
-            cacheDir.mkdirs()
-            val zip = stagingZip(model)
-            downloadWithMirrors(model, zip, onProgress)
-            val destDir = dirOf(model)
-            destDir.deleteRecursively()
-            val staging = File(cacheDir, "${model.id}.staging")
-            staging.deleteRecursively()
-            unzip(zip, staging)
-            // Zip contains a single root folder named after the model; flatten it.
-            val extractedRoot = staging.listFiles()?.singleOrNull { it.isDirectory } ?: staging
-            modelsRoot.mkdirs()
-            if (!extractedRoot.renameTo(destDir)) {
-                extractedRoot.copyRecursively(destDir, overwrite = true)
-                extractedRoot.deleteRecursively()
-            }
-            staging.deleteRecursively()
-            zip.delete()
-            check(File(destDir, "conf").exists() || destDir.listFiles()?.isNotEmpty() == true) {
-                "Model install failed: ${model.id}"
-            }
-            File(destDir, COMPLETE_MARKER).createNewFile()
-        }
-    }
+    suspend fun install(
+        model: AsrModel,
+        onProgress: (Float) -> Unit = {},
+    ): Result<File> = withContext(Dispatchers.IO) {
+        lastError = null
+        val dest = dirOf(model)
 
-    // --- download internals -------------------------------------------------
-
-    private fun stagingZip(model: VoskModel) = File(cacheDir, "${model.id}.zip")
-
-    /**
-     * Races a [PROBE_BYTES] ranged read against every mirror, then downloads from the
-     * fastest (falling back to the others in probe order), resuming partial files.
-     */
-    private suspend fun downloadWithMirrors(model: VoskModel, dest: File, onProgress: (Int) -> Unit) {
-        val ordered = rankMirrors(model.urls)
-        var lastError: Exception? = null
-        for (url in ordered) {
-            try {
-                downloadResumable(url, dest, model.sizeMb.toLong() * 1024 * 1024, onProgress)
-                return
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-        throw IOException("All mirrors failed for ${model.id}", lastError)
-    }
-
-    /** Probe all mirrors in parallel; fastest first. Unreachable mirrors go last. */
-    private suspend fun rankMirrors(urls: List<String>): List<String> = coroutineScope {
-        if (urls.size <= 1) return@coroutineScope urls
-        val probes = urls.map { url ->
-            async(Dispatchers.IO) {
-                val start = System.nanoTime()
-                try {
-                    val conn = open(url)
-                    conn.setRequestProperty("Range", "bytes=0-${PROBE_BYTES - 1}")
-                    conn.connectTimeout = PROBE_TIMEOUT_MS
-                    conn.readTimeout = PROBE_TIMEOUT_MS
-                    try {
-                        if (conn.responseCode !in 200..299) return@async url to Long.MAX_VALUE
-                        val buf = ByteArray(16 * 1024)
-                        var total = 0
-                        conn.inputStream.use { input ->
-                            while (total < PROBE_BYTES) {
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                total += n
-                            }
-                        }
-                        url to (System.nanoTime() - start)
-                    } finally {
-                        conn.disconnect()
-                    }
-                } catch (_: Exception) {
-                    url to Long.MAX_VALUE
-                }
-            }
-        }
-        probes.map { it.await() }.sortedBy { it.second }.map { it.first }
-    }
-
-    /** HTTP download with Range resume into [dest]. Throws on any failure. */
-    private fun downloadResumable(url: String, dest: File, expectedTotal: Long, onProgress: (Int) -> Unit) {
-        var already = if (dest.exists()) dest.length() else 0L
-        val conn = open(url)
-        if (already > 0) conn.setRequestProperty("Range", "bytes=$already-")
         try {
-            val code = conn.responseCode
-            when {
-                code == HttpURLConnection.HTTP_PARTIAL -> Unit // resume honored
-                code in 200..299 -> {
-                    // Server ignored Range; restart from zero.
-                    dest.delete()
-                    already = 0
+            if (isInstalled(model)) return@withContext Result.success(dest)
+            dest.mkdirs()
+
+            val mirrors = rankMirrors(model.mirrors, model.files.first())
+            Log.i(TAG, "installing ${model.id} via ${mirrors.firstOrNull()}")
+
+            var downloadedSoFar = 0L
+            for (file in model.files) {
+                val target = File(dest, file)
+                val alreadyHere = downloadedSoFar
+
+                downloadWithMirrors(mirrors, file, target) { bytesForThisFile ->
+                    val total = (alreadyHere + bytesForThisFile).toFloat()
+                    onProgress((total / model.sizeBytes).coerceIn(0f, 0.999f))
                 }
-                else -> throw IOException("HTTP $code from $url")
+                downloadedSoFar += target.length()
             }
-            val remaining = conn.contentLengthLong
-            val total = if (remaining > 0) already + remaining else expectedTotal
+
+            File(dest, COMPLETE_MARKER).createNewFile()
+            onProgress(1f)
+            Result.success(dest)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            lastError = t.message ?: t.javaClass.simpleName
+            Log.w(TAG, "install failed for ${model.id}", t)
+            Result.failure(t)
+        }
+    }
+
+    // ------------------------------------------------------------ transport
+
+    /** Probes each mirror with a tiny ranged GET and orders them fastest-first. */
+    private suspend fun rankMirrors(urls: List<String>, probeFile: String): List<String> {
+        if (urls.size == 1) return urls
+        return coroutineScope {
+            urls.map { base ->
+                async {
+                    val start = System.nanoTime()
+                    val ok = runCatching {
+                        val conn = (URL("$base/$probeFile").openConnection() as HttpURLConnection)
+                        conn.connectTimeout = PROBE_TIMEOUT_MS
+                        conn.readTimeout = PROBE_TIMEOUT_MS
+                        conn.setRequestProperty("Range", "bytes=0-${PROBE_BYTES - 1}")
+                        conn.inputStream.use { it.read(ByteArray(PROBE_BYTES)) }
+                        conn.responseCode in 200..299
+                    }.getOrDefault(false)
+                    base to if (ok) System.nanoTime() - start else Long.MAX_VALUE
+                }
+            }.awaitAll()
+                .sortedBy { it.second }
+                .also { ranked ->
+                    if (ranked.all { it.second == Long.MAX_VALUE }) {
+                        Log.w(TAG, "all mirrors unreachable; will still attempt in listed order")
+                    }
+                }
+                .map { it.first }
+        }
+    }
+
+    /** Tries each mirror in turn; a failure falls through to the next one. */
+    private suspend fun downloadWithMirrors(
+        mirrors: List<String>,
+        file: String,
+        dest: File,
+        onBytes: (Long) -> Unit,
+    ) {
+        var last: Throwable? = null
+        for (base in mirrors) {
+            try {
+                downloadResumable("$base/$file", dest, onBytes)
+                return
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                last = t
+                Log.w(TAG, "mirror failed for $file: $base (${t.message})")
+            }
+        }
+        throw last ?: IOException("no mirror produced $file")
+    }
+
+    /** HTTP download that resumes from whatever is already on disk via `Range`. */
+    private fun downloadResumable(url: String, dest: File, onBytes: (Long) -> Unit) {
+        dest.parentFile?.mkdirs()
+        var already = if (dest.exists()) dest.length() else 0L
+
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            instanceFollowRedirects = true
+            if (already > 0) setRequestProperty("Range", "bytes=$already-")
+        }
+
+        try {
+            val resumed = conn.responseCode == HttpURLConnection.HTTP_PARTIAL
+            if (already > 0 && !resumed) {
+                // Server ignored the range request, so start over rather than corrupt.
+                already = 0
+                dest.delete()
+            }
+            if (conn.responseCode !in 200..299) {
+                throw IOException("HTTP ${conn.responseCode} for $url")
+            }
+
+            val remaining = conn.contentLengthLong.takeIf { it > 0 } ?: -1L
+            val total = if (remaining > 0) already + remaining else -1L
+
             RandomAccessFile(dest, "rw").use { out ->
                 out.seek(already)
                 conn.inputStream.use { input ->
-                    val buf = ByteArray(64 * 1024)
+                    val buf = ByteArray(BUFFER_BYTES)
                     var written = already
-                    var lastPct = -1
                     while (true) {
                         val n = input.read(buf)
-                        if (n < 0) break
+                        if (n <= 0) break
                         out.write(buf, 0, n)
                         written += n
-                        val pct = ((written * 100) / total).toInt().coerceIn(0, 100)
-                        if (pct != lastPct) {
-                            lastPct = pct
-                            onProgress(pct)
-                        }
+                        onBytes(written)
                     }
-                    if (remaining > 0 && written - already < remaining) {
-                        throw IOException("Truncated download from $url")
+                    if (total > 0 && written < total) {
+                        throw IOException("truncated $url at $written of $total")
                     }
                 }
             }
@@ -196,61 +235,97 @@ class ModelManager(context: Context) {
         }
     }
 
-    private fun open(url: String): HttpURLConnection =
-        (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 30_000
-            instanceFollowRedirects = true
-        }
-
-    private fun unzip(zip: File, destDir: File) {
-        destDir.mkdirs()
-        val destCanonical = destDir.canonicalPath + File.separator
-        ZipInputStream(zip.inputStream().buffered()).use { zin ->
-            while (true) {
-                val entry = zin.nextEntry ?: break
-                val out = File(destDir, entry.name)
-                if (!out.canonicalPath.startsWith(destCanonical)) {
-                    throw IOException("Zip-slip blocked: ${entry.name}")
-                }
-                if (entry.isDirectory) {
-                    out.mkdirs()
-                } else {
-                    out.parentFile?.mkdirs()
-                    out.outputStream().buffered().use { zin.copyTo(it) }
-                }
-                zin.closeEntry()
-            }
-        }
-    }
-
     companion object {
-        private const val KEY_ACTIVE = "active_model_id"
+        private const val TAG = "ModelManager"
+        private const val PREFS = "asr_models"
+        private const val KEY_ACTIVE = "active_model"
         private const val COMPLETE_MARKER = ".complete"
+
         private const val PROBE_BYTES = 256 * 1024
         private const val PROBE_TIMEOUT_MS = 8_000
-        const val DEFAULT_MODEL_ID = "vosk-model-small-en-us-0.15"
+        private const val CONNECT_TIMEOUT_MS = 15_000
+        private const val READ_TIMEOUT_MS = 30_000
+        private const val BUFFER_BYTES = 128 * 1024
 
-        // Kept for backward compatibility with earlier callers.
-        const val MODEL_NAME = DEFAULT_MODEL_ID
-        const val MODEL_SIZE_MB = 40
+        /** Nemotron needs ~1 GB of working set; require a 6 GB-class device. */
+        private const val DEMANDING_MIN_TOTAL_RAM = 5_500_000_000L
 
-        private const val ALPHACEPHEI = "https://alphacephei.com/vosk/models"
-        private const val HF_GRIMSO = "https://huggingface.co/grimso/vosk-models/resolve/main"
-        private const val HF_RHASSPY = "https://huggingface.co/rhasspy/vosk-models/resolve/main/en"
+        const val DEFAULT_MODEL_ID = "zipformer-en-20m"
 
-        val CATALOG: List<VoskModel> = listOf(
-            VoskModel(
-                id = "vosk-model-small-en-us-0.15",
-                urls = listOf(
-                    "$ALPHACEPHEI/vosk-model-small-en-us-0.15.zip",
-                    "$HF_GRIMSO/vosk-model-small-en-us-0.15.zip",
-                    "$HF_RHASSPY/vosk-model-small-en-us-0.15.zip",
+        private fun hf(repo: String) = "https://huggingface.co/$repo/resolve/main"
+        private fun hfMirror(repo: String) = "https://hf-mirror.com/$repo/resolve/main"
+
+        private const val REPO_20M = "csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"
+        private const val REPO_EN = "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+        private const val REPO_NEMOTRON =
+            "csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-320ms-int8-2026-06-11"
+
+        val CATALOG: List<AsrModel> = listOf(
+            AsrModel(
+                id = DEFAULT_MODEL_ID,
+                displayName = "Compact",
+                tagline = "Fastest. Best on older phones and for all-day recording.",
+                languages = "English",
+                sizeBytes = 43_649_301L,
+                multilingual = false,
+                demanding = false,
+                files = listOf(
+                    "encoder-epoch-99-avg-1.int8.onnx",
+                    "decoder-epoch-99-avg-1.int8.onnx",
+                    "joiner-epoch-99-avg-1.int8.onnx",
+                    "tokens.txt",
                 ),
-                displayName = "Small (fast)",
-                sizeMb = 40,
-                quality = "Basic accuracy. Fastest, lowest battery use. Fine for close-range dictation.",
+                mirrors = listOf(hf(REPO_20M), hfMirror(REPO_20M)),
             ),
+            AsrModel(
+                id = "zipformer-en",
+                displayName = "Balanced",
+                tagline = "Noticeably more accurate. Still keeps up with live speech.",
+                languages = "English",
+                sizeBytes = 72_654_256L,
+                multilingual = false,
+                demanding = false,
+                files = listOf(
+                    "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+                    "decoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+                    "joiner-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+                    "tokens.txt",
+                ),
+                mirrors = listOf(hf(REPO_EN), hfMirror(REPO_EN)),
+            ),
+            AsrModel(
+                id = "nemotron-3.5-0.6b",
+                displayName = "Nemotron 3.5",
+                tagline = "Highest accuracy and the only multilingual option. " +
+                    "Large download; needs a recent phone.",
+                languages = "33 languages, including Hindi",
+                sizeBytes = 682_215_471L,
+                multilingual = true,
+                demanding = true,
+                files = listOf(
+                    "encoder.int8.onnx",
+                    "decoder.int8.onnx",
+                    "joiner.int8.onnx",
+                    "tokens.txt",
+                ),
+                mirrors = listOf(hf(REPO_NEMOTRON), hfMirror(REPO_NEMOTRON)),
+            ),
+        )
+
+        /** Language hints offered when a multilingual model is active. */
+        val LANGUAGES: List<Pair<String, String>> = listOf(
+            SherpaEngine.LANG_AUTO to "Detect automatically",
+            "en" to "English",
+            "hi" to "Hindi",
+            "es" to "Spanish",
+            "fr" to "French",
+            "de" to "German",
+            "zh" to "Chinese",
+            "ja" to "Japanese",
+            "ko" to "Korean",
+            "ar" to "Arabic",
+            "ru" to "Russian",
+            "pt" to "Portuguese",
         )
     }
 }

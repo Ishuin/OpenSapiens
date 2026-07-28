@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"zap git add -A && zap git commit -q -m \\\"feat: real offline ASR (Vosk) + widget wiring + full wear audio pipeline\\n\\n- VoskEngine (streaming + batch) with ModelManager one-time ~40MB model...",
-  "error": "Exit code 143\nCommand timed out after 2m 0s\nok 19 files changed, 701 insertions(+), 71 deletions(-)\nok",
-  "timestamp": "2026-07-27T08:00:18.254Z",
+  "tool_input_preview": "{\"command\":\"cd /d D:\\\\Projects\\\\open_android_sapien && dir /s /b *.kt 2>nul | findstr /v build\\\\ | findstr /v \\\"\\\\.gradle\\\"\",\"description\":\"List all Kotlin sources\"}",
+  "error": "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments",
+  "timestamp": "2026-07-28T06:44:32.100Z",
   "retry_count": 1
 }

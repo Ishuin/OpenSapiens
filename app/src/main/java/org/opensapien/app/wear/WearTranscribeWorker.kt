@@ -10,11 +10,11 @@ import org.opensapien.core.data.OpenSapienDb
 import org.opensapien.core.data.Transcript
 import org.opensapien.core.data.TranscriptFileStore
 import org.opensapien.core.transcription.ModelManager
-import org.opensapien.core.transcription.VoskEngine
+import org.opensapien.core.transcription.SherpaEngine
 import java.io.File
 
 /**
- * Batch-transcribes every WAV in `wear_inbox/` with the phone-side Vosk engine,
+ * Batch-transcribes every WAV in `wear_inbox/` with the phone-side ASR engine,
  * persists transcript file + Room row (source WEAR), then deletes the audio —
  * per spec, audio never outlives its transcription.
  */
@@ -30,11 +30,12 @@ class WearTranscribeWorker(
         if (files.isEmpty()) return Result.success()
 
         val modelManager = ModelManager(applicationContext)
-        if (!modelManager.isInstalled) return Result.retry() // model setup pending
+        // Model setup still pending — retry once the user has downloaded one.
+        val modelDir = modelManager.activeModelDir() ?: return Result.retry()
 
-        val engine = VoskEngine()
+        val engine = SherpaEngine()
         return try {
-            engine.initialize(modelManager.modelDir)
+            engine.initialize(modelDir)
             val store = TranscriptFileStore(applicationContext)
             val dao = OpenSapienDb.get(applicationContext).transcripts()
             for (wav in files) {

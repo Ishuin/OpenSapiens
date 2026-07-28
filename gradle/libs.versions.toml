@@ -19,7 +19,7 @@ googleApiClient = "2.6.0"
 googleAuth = "21.2.0"
 driveApi = "v3-rev20240914-2.0.0"
 junit = "4.13.2"
-vosk = "0.3.47"
+sherpaOnnx = "1.13.4"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -48,7 +48,6 @@ play-services-wearable = { group = "com.google.android.gms", name = "play-servic
 google-api-client-android = { group = "com.google.api-client", name = "google-api-client-android", version.ref = "googleApiClient" }
 google-api-services-drive = { group = "com.google.apis", name = "google-api-services-drive", version.ref = "driveApi" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
-vosk-android = { group = "com.alphacephei", name = "vosk-android", version.ref = "vosk" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
