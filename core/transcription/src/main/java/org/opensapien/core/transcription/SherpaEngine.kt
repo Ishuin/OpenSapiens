@@ -38,7 +38,7 @@ class SherpaEngine : TranscriptionEngine {
     @Volatile
     var language: String = LANG_AUTO
 
-    override suspend fun initialize(modelFile: File) = withContext(Dispatchers.IO) {
+    override suspend fun initialize(modelFile: File): Unit = withContext(Dispatchers.IO) {
         check(modelFile.isDirectory) { "sherpa model dir missing: $modelFile" }
         release()
 
