@@ -14,7 +14,9 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.IBinder
+import androidx.wear.tiles.TileService
 import com.google.android.gms.wearable.Wearable
+import org.opensapien.wear.tile.RecordTileService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,7 +53,9 @@ class WearRecordingService : Service() {
             ACTION_TOGGLE -> if (recJob != null) stopRec() else startRec()
             ACTION_FLUSH -> if (recJob == null) {
                 scope.launch {
+                    refreshQueueCount()
                     flushQueue()
+                    refreshQueueCount()
                     stopSelf()
                 }
             }
@@ -79,6 +83,7 @@ class WearRecordingService : Service() {
 
         stopRequested = false
         _isRecording.value = true
+        notifyTile()
         recJob = scope.launch {
             val wav = File(queueDir(), "wear_${System.currentTimeMillis()}.wav")
             try {
@@ -88,7 +93,9 @@ class WearRecordingService : Service() {
             } finally {
                 _isRecording.value = false
                 recJob = null
+                refreshQueueCount()
                 runCatching { flushQueue() }
+                refreshQueueCount()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -173,11 +180,27 @@ class WearRecordingService : Service() {
                 // sendFile streams the file and closes the output side when done.
                 channelClient.sendFile(channel, Uri.fromFile(wav)).await()
                 wav.delete()
+                refreshQueueCount()
             }
         }
     }
 
     private fun queueDir(): File = File(filesDir, "queue").apply { mkdirs() }
+
+    /** Recounts pending clips so the UI reflects what is actually on disk. */
+    private fun refreshQueueCount() {
+        _queued.value = queueDir()
+            .listFiles { f -> f.extension == "wav" && f.length() > 44 }
+            ?.size ?: 0
+        notifyTile()
+    }
+
+    /** Asks the system to redraw the record tile so its label matches the live state. */
+    private fun notifyTile() {
+        runCatching {
+            TileService.getUpdater(this).requestUpdate(RecordTileService::class.java)
+        }
+    }
 
     override fun onDestroy() {
         stopRequested = true
@@ -197,5 +220,13 @@ class WearRecordingService : Service() {
 
         private val _isRecording = MutableStateFlow(false)
         val isRecording: StateFlow<Boolean> = _isRecording
+
+        private val _queued = MutableStateFlow(0)
+
+        /**
+         * Clips recorded on the watch that haven't reached the phone yet. Surfaced in the
+         * watch UI so a queue caused by an unreachable phone is visible rather than silent.
+         */
+        val queued: StateFlow<Int> = _queued
     }
 }
