@@ -8,7 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.opensapien.app.widget.RecordWidget
 import org.opensapien.core.recording.RecordingService
-import org.opensapien.core.sync.DriveSyncWorker
+import org.opensapien.core.sync.BackupSyncWorker
 
 class OpenSapienApp : Application() {
 
@@ -16,7 +16,7 @@ class OpenSapienApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        DriveSyncWorker.schedule(this)
+        BackupSyncWorker.schedule(this)
         // Keep home-screen widgets in lockstep with recorder state.
         appScope.launch {
             RecordingService.state.collect {

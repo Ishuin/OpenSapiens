@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.opensapien.app.ui.ArchiveScreen
+import org.opensapien.app.ui.BackupScreen
 import org.opensapien.app.ui.ModelsScreen
 import org.opensapien.app.ui.RecordScreen
 import org.opensapien.app.ui.TranscriptDetail
@@ -39,6 +40,9 @@ import org.opensapien.core.data.OpenSapienDb
 import org.opensapien.core.data.Transcript
 import org.opensapien.core.data.TranscriptFileStore
 import org.opensapien.core.recording.RecordingService
+import org.opensapien.core.sync.BackupPrefs
+import org.opensapien.core.sync.BackupSyncWorker
+import org.opensapien.core.sync.SafBackupTarget
 import org.opensapien.core.transcription.ModelManager
 
 class MainActivity : ComponentActivity() {
@@ -58,7 +62,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) { Record("Record"), Archive("Archive"), Models("Models") }
+private enum class Tab(val label: String) {
+    Record("Record"),
+    Archive("Archive"),
+    Models("Models"),
+    Backup("Backup"),
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -105,6 +114,33 @@ private fun OpenSapienApp(autoRecord: Boolean) {
     // ------------------------------------------------------------- archive
     val transcripts by remember { dao.observeAll() }
         .collectAsState(initial = emptyList())
+
+    // ------------------------------------------------------------- backup
+    val backupPrefs = remember { BackupPrefs(context) }
+    var backupRevision by remember { mutableStateOf(0) }
+    val folderLabel = remember(backupRevision) {
+        SafBackupTarget(context).takeIf { it.isLinked() }?.describe()
+    }
+    var unmeteredOnly by remember { mutableStateOf(backupPrefs.unmeteredOnly) }
+    var backupNotice by remember { mutableStateOf<String?>(null) }
+
+    val folderPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            // Without the persisted grant the folder becomes unreadable after reboot.
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, BackupPrefs.PERSIST_FLAGS,
+                )
+            }
+            backupPrefs.treeUri = uri
+            backupRevision++
+            BackupSyncWorker.schedule(context)
+            BackupSyncWorker.syncNow(context)
+            backupNotice = "Backing up now…"
+        }
+    }
 
     LaunchedEffect(autoRecord) {
         if (autoRecord && micGranted && recState !is RecordingService.State.Recording) {
@@ -178,6 +214,30 @@ private fun OpenSapienApp(autoRecord: Boolean) {
                     }
                 },
                 onOpenModels = { tab = Tab.Models },
+                modifier = inner,
+            )
+
+            Tab.Backup -> BackupScreen(
+                folderLabel = folderLabel,
+                unmeteredOnly = unmeteredOnly,
+                lastSyncLabel = backupNotice,
+                onChooseFolder = { folderPicker.launch(null) },
+                onUnlink = {
+                    backupPrefs.treeUri = null
+                    backupRevision++
+                    BackupSyncWorker.cancel(context)
+                    backupNotice = null
+                },
+                onUnmeteredChange = {
+                    unmeteredOnly = it
+                    backupPrefs.unmeteredOnly = it
+                    // Re-enqueue so the new network constraint takes effect.
+                    if (folderLabel != null) BackupSyncWorker.schedule(context)
+                },
+                onSyncNow = {
+                    BackupSyncWorker.syncNow(context)
+                    backupNotice = "Backing up now…"
+                },
                 modifier = inner,
             )
 

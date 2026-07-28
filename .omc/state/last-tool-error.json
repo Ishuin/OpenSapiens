@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd /d D:\\\\Projects\\\\open_android_sapien && dir /s /b *.kt 2>nul | findstr /v build\\\\ | findstr /v \\\"\\\\.gradle\\\"\",\"description\":\"List all Kotlin sources\"}",
-  "error": "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments",
-  "timestamp": "2026-07-28T06:44:32.100Z",
+  "tool_input_preview": "{\"command\":\"cd \\\"D:/Projects/open_android_sapien\\\" && zap grep -n \\\"project(\\\" app/build.gradle.kts && sed -n '20,60p' core/sync/src/main/java/org/opensapien/core/sync/BackupSyncWorker.kt\",\"descriptio...",
+  "error": "Exit code 2\nrg: regex parse error:\n    (?:project()\n    ^\nerror: unclosed group\n0 matches for 'project('",
+  "timestamp": "2026-07-28T10:25:41.011Z",
   "retry_count": 1
 }

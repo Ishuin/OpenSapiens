@@ -3,30 +3,29 @@ package org.opensapien.core.sync
 import android.content.Context
 
 /**
- * Google Drive REST wrapper, `drive.file` scope only (least privilege — the app
- * can see only files it created). Ensures an `open_sapien` folder exists at
- * Drive root and uploads/updates one file per transcription.
+ * Native Google Drive REST backend, `drive.file` scope only (least privilege —
+ * the app can see only files it created). NOT WIRED YET; [SafBackupTarget] is
+ * the shipping backup path.
  *
- * TODO(auth): wire Google Sign-In / AuthorizationClient to obtain credentials,
- * store the linked account name in DataStore. Until then [isLinked] is false
- * and sync no-ops, keeping the app 100% offline-functional.
+ * Wiring this requires setup outside the codebase:
+ *  1. A Google Cloud project with the Drive API enabled.
+ *  2. An OAuth client id of type Android, registered against the release
+ *     signing SHA-1 (and the debug SHA-1 for local testing).
+ *  3. Google's OAuth verification review before a public Play release, since
+ *     `drive.file` is a restricted-ish scope for distributed apps.
+ *
+ * Until then [isLinked] is false and [BackupSyncWorker] ignores this target.
  */
-class DriveClient(private val context: Context) {
+class DriveClient(private val context: Context) : BackupTarget {
 
-    fun isLinked(): Boolean = false // TODO: read linked account from DataStore
+    override fun isLinked(): Boolean = false
 
-    /**
-     * Create or update [fileName] inside the Drive `open_sapien` folder.
-     * @return the Drive file id.
-     */
-    suspend fun upload(fileName: String, text: String, existingFileId: String?): String {
-        // TODO: Drive v3 files.create / files.update with parent = ensureFolder()
-        throw NotImplementedError("Drive auth not wired yet")
-    }
+    override fun describe(): String? = null
 
-    /** Find-or-create the open_sapien folder at Drive root. */
-    private suspend fun ensureFolder(): String {
-        throw NotImplementedError()
+    override suspend fun upload(fileName: String, text: String, existingId: String?): String {
+        // TODO: Credential Manager sign-in + Drive v3 files.create / files.update
+        //  with parent = ensureFolder().
+        throw NotImplementedError("Native Drive backend not wired yet; use a backup folder")
     }
 
     companion object {
